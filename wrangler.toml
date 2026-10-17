@@ -1,0 +1,59 @@
+# One Worker per client, with its own D1, KV and secrets. The shell is static
+# assets in ./dist (npm run build); only /api/* runs the Worker.
+# Fill in the ids, then see README.md.
+
+name = "pwa-shell"
+main = "src/worker.ts"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+workers_dev = true
+preview_urls = false
+
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+# The shell holds nothing private, so it's served without running any code.
+run_worker_first = ["/api/*"]
+
+[observability]
+enabled = true
+
+[observability.logs]
+enabled = true
+invocation_logs = true
+
+[triggers]
+# Hourly: forget used-up challenges, invites, sessions and approvals.
+crons = ["0 * * * *"]
+
+[vars]
+# On the sign-in screen and in the passkey prompt. Also the app's name when installed.
+APP_NAME = "Harbour Plumbing"
+# Exactly where the app is served. Passkeys are tied to this host name, so pick
+# the address it will keep (a custom domain, not workers.dev, for a real client).
+PUBLIC_URL = "http://localhost:8787"
+# For notifications. VAPID_PUBLIC_KEY goes in .dev.vars for wrangler dev
+# (npm run dev:secrets makes one), and here once deployed.
+VAPID_SUBJECT = "mailto:ops@harbour.example"
+# VAPID_PUBLIC_KEY = "<from npm run dev:secrets>"
+# SESSION_IDLE_DAYS = "14"
+# SESSION_MAX_DAYS = "90"
+# Credentials tools may use, and the only hosts each may go to. The value is the
+# CREDENTIAL_<NAME> secret.
+# CREDENTIAL_HOSTS = '{"servicem8":["api.servicem8.com"]}'
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pwa-shell"              # wrangler d1 create pwa-shell --location oc
+database_id = "<d1 id>"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "<kv id>"                           # wrangler kv namespace create pwa-shell
+
+# Secrets (wrangler secret put <NAME> --config wrangler.toml):
+#   KEYRING            {"current":"k1","keys":{"k1":"<32 random bytes, base64>"}}
+#   VAPID_PRIVATE_KEY  for notifications (npm run dev:secrets makes a pair)
+#   CREDENTIAL_<NAME>  for each API key in CREDENTIAL_HOSTS

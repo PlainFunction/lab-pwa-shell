@@ -1,0 +1,19 @@
+# Secrets for wrangler dev. Copy to .dev.vars (gitignored), or run
+# `npm run dev:secrets` to write .dev.vars with all of these made for you.
+# Deployed, KEYRING and VAPID_PRIVATE_KEY are Worker secrets:
+#   wrangler secret put <NAME> --config wrangler.toml
+# and VAPID_PUBLIC_KEY is a var in wrangler.toml.
+
+# Seals pending approvals and push subscriptions. JSON, with a key id so keys
+# can be rotated later. 32 random bytes, base64:
+#   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+# Keep a copy somewhere safe: a new keyring can't open what the old one sealed.
+KEYRING={"current":"k1","keys":{"k1":"<32 random bytes, base64>"}}
+
+# Notifications. A P-256 key pair, base64url: the public key uncompressed (65
+# bytes), the private key as its 32-byte d. Without them, notifications are off.
+VAPID_PUBLIC_KEY=
+VAPID_PRIVATE_KEY=
+
+# Only with CREDENTIAL_HOSTS in wrangler.toml, an API key per credential:
+# CREDENTIAL_EXAMPLE=
