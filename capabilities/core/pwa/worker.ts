@@ -6,7 +6,7 @@ import { Logger } from '../kernel/logger'
 import type { Module, Registry } from '../kernel/registry'
 import { HttpClient } from '../security/egress'
 import { Telemetry, type SpanOptions } from '../telemetry/telemetry'
-import { Passkeys, Sessions, deviceLabel, type SignedIn } from './auth'
+import { Passkeys, Sessions, StepUpNeeded, deviceLabel, type SignedIn, type Tap } from './auth'
 import { Calls } from './calls'
 import { PwaModule, RELYING_PARTY, type PwaEnv, type PwaOptions } from './module'
 import { Access } from './roles'
@@ -76,6 +76,15 @@ function checkSubscription(input: unknown): PushSubscription {
 
 const me = (x: { me?: SignedIn }) => x.me!.user
 
+/**
+ * The passkey tap for this request: the signature comes in the body as
+ * `credential`, alongside the same fields that asked for the action. Without
+ * one, the response is 428 with options to sign, and the shell sends the same
+ * request again with the signature.
+ */
+const tapFor = (x: { c: Registry; body: Record<string, unknown>; me?: SignedIn }): Tap =>
+  (action, details) => x.c.get(Passkeys).tap(me(x), x.body.credential, action, details)
+
 /** Who's signed in, and what their role lets the shell show. The Worker checks every action again regardless. */
 const userView = async (c: Registry, user: User) =>
   ({ name: user.name, atRisk: await c.get(Passkeys).atRisk(user), ...c.get(Access).abilities(user) })
@@ -122,13 +131,13 @@ const ROUTES: Route[] = [
     return json({ devices })
   }),
   route('DELETE', '/api/devices/:id', true, async x => {
-    await x.c.get(Passkeys).remove(me(x), x.params[0])
+    await x.c.get(Passkeys).remove(me(x), x.params[0], tapFor(x))
     return json({ ok: true })
   }),
   route('POST', '/api/invites', true, async x => {
     const { token, expiresAt } = await x.c.get(Passkeys).invite(me(x), {
       name: typeof x.body.name === 'string' ? x.body.name : undefined, role: typeof x.body.role === 'string' ? x.body.role : undefined, ownDevice: x.body.ownDevice === true,
-    })
+    }, tapFor(x))
     return json({ link: `${x.c.get(RELYING_PARTY).origin}/#invite=${token}`, expiresAt })
   }),
 
@@ -136,15 +145,15 @@ const ROUTES: Route[] = [
   // recovering someone who lost every device, removing someone.
   route('GET', '/api/people', true, async x => json({ people: await x.c.get(Passkeys).people(me(x)) })),
   route('POST', '/api/people/:id/recover', true, async x => {
-    const { token, expiresAt } = await x.c.get(Passkeys).recover(me(x), x.params[0])
+    const { token, expiresAt } = await x.c.get(Passkeys).recover(me(x), x.params[0], tapFor(x))
     return json({ link: `${x.c.get(RELYING_PARTY).origin}/#invite=${token}`, expiresAt })
   }),
   route('PATCH', '/api/people/:id', true, async x => {
-    await x.c.get(Passkeys).setRole(me(x), x.params[0], str(x.body.role, 'role', 32))
+    await x.c.get(Passkeys).setRole(me(x), x.params[0], str(x.body.role, 'role', 32), tapFor(x))
     return json({ ok: true })
   }),
   route('DELETE', '/api/people/:id', true, async x => {
-    await x.c.get(Passkeys).removePerson(me(x), x.params[0])
+    await x.c.get(Passkeys).removePerson(me(x), x.params[0], tapFor(x))
     return json({ ok: true })
   }),
 
@@ -161,6 +170,7 @@ const ROUTES: Route[] = [
 
 function errorResponse(err: unknown, c: Registry, path: string): Response {
   if (err instanceof Unauthorised) return json({ error: err.message }, 401)
+  if (err instanceof StepUpNeeded) return json({ error: err.message, stepUp: err.options }, 428)
   if (err instanceof NotAllowedError) {
     // Why a passkey was refused helps us; the person gets the same message either way.
     c.get(Logger).warn('pwa.refused', { route: path, error: err })

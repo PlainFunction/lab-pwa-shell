@@ -76,6 +76,11 @@ async function api<T = Json>(method: string, path: string, body?: unknown): Prom
   })
   const data = await res.json().catch(() => ({}))
   if (res.status === 401) { me = null; signIn(); throw new SignedOut() }
+  // Anything that changes who can get in needs a passkey tap: sign what the Worker
+  // sent, for exactly this action, and send the same request again with it.
+  if (res.status === 428 && data.stepUp) {
+    return api<T>(method, path, { ...(body as object | undefined), credential: await usePasskey(data.stepUp) })
+  }
   if (!res.ok) throw new Error(data.error ?? `Something went wrong (${res.status})`)
   return data as T
 }

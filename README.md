@@ -93,7 +93,9 @@ their own devices there.
 ## Who can do what
 
 `src/roles.ts` has Harbour Plumbing's roles. The Worker checks every request
-against them; the app only hides what someone can't use.
+against them; the app only hides what someone can't use. Anything that changes
+who can get in (inviting, adding a device, recovering, removing, changing a
+role) also needs a passkey tap, so a stolen session cookie can't let anyone in.
 
 | Role | Sees | Can |
 |---|---|---|

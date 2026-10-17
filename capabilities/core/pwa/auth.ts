@@ -1,8 +1,8 @@
 import type { AuditLog } from '../audit/audit-log'
 import type { PushSubscription, PushSubscriptionStore } from '../channels/web-push'
 import type { Clock } from '../kernel/clock'
-import { ConflictError, NotAllowedError, ValidationError } from '../kernel/errors'
-import { b64url, randomBytes, sha256Hex } from '../kernel/encoding'
+import { CapabilityError, ConflictError, NotAllowedError, ValidationError } from '../kernel/errors'
+import { b64url, randomBytes, sha256Hex, stableJson, utf8 } from '../kernel/encoding'
 import type { Access } from './roles'
 import type { AccountStore, ChallengeStore, Passkey, Session, SessionStore, User } from './stores'
 import { ALGORITHMS, assertionSchema, claimedChallenge, verifyAssertion, verifyRegistration, type RelyingParty } from './webauthn/webauthn'
@@ -24,6 +24,22 @@ export const SESSION_COOKIE = '__Host-pf_session'
 const TOKEN = /^[A-Za-z0-9_-]{43}$/
 
 export interface SignedIn { user: User; session: Session }
+
+/**
+ * A passkey tap for one action, given to every Passkeys method that changes
+ * who can get in. It's called after the method's own checks, so nobody is asked
+ * to tap for something their role can't do, and before anything changes.
+ */
+export type Tap = (action: string, details: Record<string, unknown>) => Promise<void>
+
+/** Thrown by Passkeys.tap with no credential yet: sign `options` and send the same request again with it. */
+export class StepUpNeeded extends CapabilityError {
+  readonly options: RequestOptionsJSON
+  constructor(options: RequestOptionsJSON) {
+    super('step_up', 'Approve this with your passkey')
+    this.options = options
+  }
+}
 
 function cookieValue(header: string | null, name: string): string | undefined {
   for (const part of (header ?? '').split(';')) {
@@ -174,13 +190,15 @@ export class Passkeys {
    * may make. Returns the token; the link is `<origin>/#invite=<token>`, in the
    * fragment so it never reaches a server log.
    */
-  async invite(by: User, o: { name?: string; role?: string; ownDevice?: boolean }, ttlHours = 24): Promise<{ token: string; expiresAt: string }> {
+  async invite(by: User, o: { name?: string; role?: string; ownDevice?: boolean }, tap: Tap, ttlHours = 24): Promise<{ token: string; expiresAt: string }> {
     const role = o.ownDevice ? by.role : o.role ?? ''
     if (!o.ownDevice && !this.#d.access.invitable(by).includes(role)) {
       throw new NotAllowedError(this.#d.access.exists(role) ? `You can't invite someone as ${this.#d.access.label(role)}` : 'Pick a role for them')
     }
     const name = o.ownDevice ? by.name : (o.name ?? '').trim()
     if (!name || name.length > 60) throw new ValidationError('A name of up to 60 characters, please')
+    // A link for another device is a way in for whoever holds it, so it needs a tap as much as an invite does.
+    await tap(o.ownDevice ? 'device.add' : 'person.invite', o.ownDevice ? {} : { name, role })
     const token = b64url(randomBytes(24))
     const expiresAt = new Date(this.#now().getTime() + ttlHours * HOUR).toISOString()
     await this.#d.accounts.addInvite(await sha256Hex(token), {
@@ -262,6 +280,31 @@ export class Passkeys {
   }
 
   /** Approves something with one of `user`'s passkeys, signed over `challenge`. Returns the passkey used. */
+  /**
+   * One passkey tap for one action. Without a credential it throws
+   * StepUpNeeded, with options whose challenge is a hash of exactly this action,
+   * kept for five minutes. With one, the challenge must be one we made for this
+   * person and this action (and it's used up either way), and the signature
+   * must be from one of their own passkeys, with the face, finger or PIN.
+   */
+  async tap(user: User, credential: unknown, action: string, details: Record<string, unknown>): Promise<void> {
+    const what = await sha256Hex(stableJson({ action, details }))
+    const now = this.#now()
+    if (credential === undefined || credential === null) {
+      const challenge = b64url(await crypto.subtle.digest('SHA-256', utf8(stableJson({
+        purpose: 'pwa-step-up', user: user.id, action, details, nonce: b64url(randomBytes(16)),
+      }))))
+      await this.#d.challenges.put(await sha256Hex(challenge), 'step-up', { user: user.id, what }, new Date(now.getTime() + CHALLENGE_TTL).toISOString())
+      const allow = (await this.#d.accounts.passkeysOf(user.id)).map(p => ({ type: 'public-key' as const, id: p.id }))
+      throw new StepUpNeeded({ challenge, rpId: this.#d.rp.id, timeout: CHALLENGE_TTL, userVerification: 'required', allowCredentials: allow })
+    }
+    const challenge = claimedChallenge((credential as { response?: { clientDataJSON?: string } })?.response?.clientDataJSON ?? '')
+    const payload = challenge ? await this.#d.challenges.take(await sha256Hex(challenge), 'step-up', now.toISOString()) : undefined
+    if (!payload || payload.user !== user.id || payload.what !== what) throw new NotAllowedError('That passkey approval was for something else, or took too long. Try again.')
+    const passkey = await this.check(user, credential, challenge)
+    await this.#d.audit.record({ actor: `app:${user.id}`, action: 'action.approved', subject: `action:${action}`, detail: { challenge, passkey: passkey.id.slice(0, 16) } })
+  }
+
   async check(user: User, credential: unknown, challenge: string): Promise<Passkey> {
     const passkey = await this.#d.accounts.passkey(credentialIdOf(credential))
     if (!passkey || passkey.userId !== user.id) throw new NotAllowedError('That passkey is not yours')
@@ -337,8 +380,9 @@ export class Passkeys {
    * them out everywhere straight away, so a lost or stolen phone stops working,
    * then makes a one-time link that sets up a new passkey on the same account.
    */
-  async recover(by: User, userId: string, ttlHours = 24): Promise<{ token: string; expiresAt: string }> {
+  async recover(by: User, userId: string, tap: Tap, ttlHours = 24): Promise<{ token: string; expiresAt: string }> {
     const person = await this.#other(by, userId, "You can't recover yourself. Add another device in Settings instead.")
+    await tap('person.recover', { person: person.id })
     const removed = await this.#d.accounts.removePasskeysOf(person.id)
     const signedOut = await this.#d.sessions.endForUser(person.id)
     // An "add another device" link made on the lost phone would otherwise still work,
@@ -353,8 +397,9 @@ export class Passkeys {
   }
 
   /** Takes someone out of the app: their passkeys, sessions and account. */
-  async removePerson(by: User, userId: string): Promise<void> {
+  async removePerson(by: User, userId: string, tap: Tap): Promise<void> {
     const person = await this.#other(by, userId, "You can't remove yourself.")
+    await tap('person.remove', { person: person.id })
     const signedOut = await this.#d.sessions.endForUser(person.id)
     await this.#d.accounts.removeInvitesFor(person.id)
     await this.#stopPush(await this.#d.accounts.pushOf({ userId: person.id }))
@@ -363,19 +408,21 @@ export class Passkeys {
   }
 
   /** Gives someone else another role. It applies from their next request: nothing is cached. */
-  async setRole(by: User, userId: string, role: string): Promise<void> {
+  async setRole(by: User, userId: string, role: string, tap: Tap): Promise<void> {
     const person = await this.#other(by, userId, "You can't change your own role. Ask someone else who manages people.")
     if (!this.#d.access.exists(role)) throw new ValidationError('No role by that name')
     if (person.role === role) return
+    await tap('person.role', { person: person.id, role })
     await this.#d.accounts.setRole(person.id, role)
     await this.#d.audit.record({ actor: `app:${by.id}`, action: 'person.role', subject: `person:${person.id}`, detail: { from: person.role, to: role } })
   }
 
   /** Removes a passkey and signs out every device it signed in. Not the last one: that would lock the person out. */
-  async remove(user: User, passkeyId: string): Promise<void> {
+  async remove(user: User, passkeyId: string, tap: Tap): Promise<void> {
     const mine = await this.#d.accounts.passkeysOf(user.id)
     if (!mine.some(p => p.id === passkeyId)) throw new NotAllowedError('That passkey is not yours')
     if (mine.length === 1) throw new ConflictError("That's your only passkey. Add another device first.")
+    await tap('device.remove', { passkey: passkeyId })
     await this.#d.accounts.removePasskey(passkeyId, user.id)
     const ended = await this.#d.sessions.endForPasskey(passkeyId)
     await this.#stopPush(await this.#d.accounts.pushOf({ passkeyId }))

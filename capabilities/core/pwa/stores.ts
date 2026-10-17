@@ -269,7 +269,8 @@ export class D1SessionStore extends SessionStore {
   }
 }
 
-export type ChallengePurpose = 'register' | 'login'
+/** step-up: a passkey tap for one action that changes who can get in (Passkeys.tap). */
+export type ChallengePurpose = 'register' | 'login' | 'step-up'
 
 export abstract class ChallengeStore extends Port {
   abstract put(challengeHash: string, purpose: ChallengePurpose, payload: Record<string, string>, expiresAt: string): Promise<void>
