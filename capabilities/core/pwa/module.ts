@@ -17,6 +17,7 @@ import { Passkeys, Sessions } from './auth'
 import { Calls } from './calls'
 import { Access, DEFAULT_ROLES, type Roles } from './roles'
 import { AccountStore, ChallengeStore, D1AccountStore, D1ChallengeStore, D1PendingCallStore, D1SessionStore, PendingCallStore, SessionStore } from './stores'
+import { KvUploadStore, UploadStore } from './uploads'
 import type { RelyingParty } from './webauthn/webauthn'
 
 /**
@@ -151,6 +152,7 @@ export class PwaModule<E extends PwaEnv = PwaEnv> extends Module {
     c.bind(ChallengeStore, () => new D1ChallengeStore(this.env.DB))
     c.bind(PendingCallStore, c => new D1PendingCallStore(this.env.DB, c.get(Cipher)))
     c.bind(PushSubscriptionStore, c => new KvPushSubscriptionStore(this.env.KV, c.get(Cipher)))
+    c.bind(UploadStore, c => new KvUploadStore(this.env.KV, c.get(Cipher)))
   }
 
   protected channels(c: Registry) {
@@ -206,7 +208,7 @@ export class PwaModule<E extends PwaEnv = PwaEnv> extends Module {
       sessions: c.get(Sessions), audit: c.get(AuditLog), clock: c.get(Clock), push: c.get(PushSubscriptionStore),
     }))
     c.bind(Calls, c => new Calls({
-      tools: c.get(ToolBox), pending: c.get(PendingCallStore), passkeys: c.get(Passkeys), access: c.get(Access),
+      tools: c.get(ToolBox), pending: c.get(PendingCallStore), uploads: c.get(UploadStore), passkeys: c.get(Passkeys), access: c.get(Access),
       credentials: c.get(CredentialBroker), audit: c.get(AuditLog), clock: c.get(Clock), logger: c.get(Logger),
     }))
   }

@@ -1,7 +1,8 @@
 import { env } from 'cloudflare:workers'
 import { beforeEach, describe, expect, it } from 'vitest'
 import schema from '../capabilities/core/schema.sql?raw'
-import { SoftwarePasskey, b64url, randomBytes, sha256Hex, type PwaEnv } from '#capabilities'
+import { SoftwarePasskey, b64url, randomBytes, sha256Hex } from '#capabilities'
+import type { LabEnv } from '../src/scanning'
 import worker from '../src/worker'
 
 // The app itself is tested in capabilities/core/pwa. These check this
@@ -10,8 +11,8 @@ import worker from '../src/worker'
 
 const ORIGIN = 'https://harbour.example'
 const ctx = { waitUntil() {}, passThroughOnException() {}, props: {} } as unknown as ExecutionContext
-const labEnv = (over: Partial<PwaEnv> = {}): PwaEnv => ({
-  APP_NAME: 'Harbour Plumbing', PUBLIC_URL: ORIGIN, DB: env.DB, KV: env.KV,
+const labEnv = (over: Partial<LabEnv> = {}): LabEnv => ({
+  APP_NAME: 'Harbour Plumbing', PUBLIC_URL: ORIGIN, DB: env.DB, KV: env.KV, SCANS: env.SCANS,
   KEYRING: JSON.stringify({ current: 'k1', keys: { k1: b64url(randomBytes(32)) } }), ...over,
 })
 
@@ -22,7 +23,7 @@ beforeEach(async () => {
 })
 
 /** A phone with a passkey, signed in through an invite like the one scripts/invite.mjs makes. */
-async function phone(e: PwaEnv, role = 'admin', name = 'Dan') {
+async function phone(e: LabEnv, role = 'admin', name = 'Dan') {
   let cookie = ''
   const call = async (method: string, path: string, body?: unknown) => {
     const headers: Record<string, string> = { origin: ORIGIN }
@@ -37,7 +38,13 @@ async function phone(e: PwaEnv, role = 'admin', name = 'Dan') {
   const key = await SoftwarePasskey.create(ORIGIN)
   const options = await call('POST', '/api/register/options', { invite: token })
   await call('POST', '/api/register', { invite: token, credential: await key.register(options.body as never) })
-  return { call, key }
+  /** A photo from the camera, as the shell uploads it for the form. */
+  const upload = async (bytes: Uint8Array) => {
+    const headers: Record<string, string> = { origin: ORIGIN, cookie, 'content-type': 'image/jpeg', 'x-file-name': 'IMG_0412.jpg' }
+    const res = await worker.fetch!(new Request(`${ORIGIN}/api/uploads`, { method: 'POST', headers, body: bytes }) as never, e, ctx)
+    return { status: res.status, body: await res.json() as Record<string, any> }
+  }
+  return { call, upload, key }
 }
 
 describe('this Worker', () => {
@@ -51,7 +58,7 @@ describe('this Worker', () => {
       },
     })
     const tools = (await call('GET', '/api/tools')).body.tools as { name: string; confirm: boolean }[]
-    expect(tools.map(t => [t.name, t.confirm])).toEqual([['jobs__today', false], ['quotes__follow_up', true], ['notify__test', true]])
+    expect(tools.map(t => [t.name, t.confirm])).toEqual([['jobs__today', false], ['quotes__follow_up', true], ['notify__test', true], ['scans__scan', true], ['scans__recent', false]])
   })
 
   it("shows today's jobs straight away, with what they're worth only for roles that see prices", async () => {
@@ -70,8 +77,8 @@ describe('this Worker', () => {
 
   it('gives each role only its own automations', async () => {
     const names = async (role: string) => ((await (await phone(labEnv(), role, role)).call('GET', '/api/tools')).body.tools as { name: string }[]).map(t => t.name)
-    expect(await names('office')).toEqual(['jobs__today', 'quotes__follow_up'])
-    expect(await names('tradie')).toEqual(['jobs__today'])
+    expect(await names('office')).toEqual(['jobs__today', 'quotes__follow_up', 'scans__scan', 'scans__recent'])
+    expect(await names('tradie')).toEqual(['jobs__today', 'scans__scan'])
   })
 
   it('follows up a quote only after a passkey approves it', async () => {
@@ -87,5 +94,23 @@ describe('this Worker', () => {
     const held = await call('POST', '/api/calls', { tool: 'notify__test', args: { message: 'Hello', to: 'Everyone' } })
     const res = await call('POST', `/api/calls/${held.body.id}/confirm`, { credential: await key.sign(held.body.options as never) })
     expect(res.body).toEqual({ status: 'done', ok: false, error: 'Notifications are not set up: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY and VAPID_SUBJECT' })
+  })
+
+  it('scans a photo from the camera after a passkey approves it, files it in R2, and lists it', async () => {
+    const { call, upload, key } = await phone(labEnv())
+    const photo = crypto.getRandomValues(new Uint8Array(2048))
+    const up = await upload(photo)
+    expect(up.status).toBe(200)
+    const held = await call('POST', '/api/calls', { tool: 'scans__scan', args: { photo: up.body.id } })
+    expect(held.body.status).toBe('confirm')
+    const done = await call('POST', `/api/calls/${held.body.id}/confirm`, { credential: await key.sign(held.body.options as never) })
+    expect(done.body).toEqual({ status: 'done', ok: true, content: {
+      title: 'Reece receipt (sample)', filed: 'Bill, dated 2026-10-17', next: "It's filed.",
+      note: "Workers AI isn't connected, so every photo reads as the same sample receipt.",
+    } })
+    const stored = await env.SCANS.get(`scans/${[...new Uint8Array(await crypto.subtle.digest('SHA-256', photo))].map(b => b.toString(16).padStart(2, '0')).join('')}`)
+    expect(new Uint8Array(await stored!.arrayBuffer())).toEqual(photo)
+    const recent = await call('POST', '/api/calls', { tool: 'scans__recent', args: {} })
+    expect(recent.body.content.scans[0]).toMatchObject({ title: 'Reece receipt (sample)', detail: 'Bill, dated 2026-10-17' })
   })
 })

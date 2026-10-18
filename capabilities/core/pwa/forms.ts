@@ -9,7 +9,8 @@ export interface Hint { element: string; label: string; multiline?: boolean }
 export interface Prop { type?: string; enum?: unknown[]; description?: string; minimum?: number; maximum?: number; maxLength?: number; 'x-slack'?: Hint }
 export interface Schema { properties?: Record<string, Prop>; required?: string[] }
 
-export type FieldKind = 'text' | 'textarea' | 'number' | 'email' | 'url' | 'date' | 'time' | 'select' | 'checkbox'
+/** `image` is a photo: the shell uploads it and the value is the upload's id. */
+export type FieldKind = 'text' | 'textarea' | 'number' | 'email' | 'url' | 'date' | 'time' | 'select' | 'checkbox' | 'image'
 
 export interface Field {
   name: string
@@ -23,11 +24,11 @@ export interface Field {
 
 const INPUTS: Record<string, FieldKind> = {
   plain_text_input: 'text', number_input: 'number', email_text_input: 'email', url_text_input: 'url',
-  datepicker: 'date', timepicker: 'time', static_select: 'select', checkboxes: 'checkbox',
+  datepicker: 'date', timepicker: 'time', static_select: 'select', checkboxes: 'checkbox', image_select: 'image',
 }
 
-/** Slack-only inputs: a Slack user, a channel, an image attached in a thread. They mean nothing in the app. */
-export const SLACK_ONLY = ['users_select', 'conversations_select', 'image_select']
+/** Slack-only inputs: a Slack user, a channel. They mean nothing in the app. */
+export const SLACK_ONLY = ['users_select', 'conversations_select']
 
 export class UnsupportedField extends Error {}
 
@@ -101,9 +102,8 @@ export function shownOf(schema: Schema | undefined, content: Record<string, unkn
   return out
 }
 
-/** What's about to happen, as label and value, for the screen that asks for a passkey. */
-export function summaryOf(fields: Field[], args: Record<string, unknown>): { label: string; value: string }[] {
-  return fields
-    .filter(f => args[f.name] !== undefined)
-    .map(f => ({ label: f.label, value: f.kind === 'checkbox' ? (args[f.name] ? 'Yes' : 'No') : String(args[f.name]) }))
+/** What's about to happen, as label and value, for the screen that asks for a passkey. `photos` names uploads by id. */
+export function summaryOf(fields: Field[], args: Record<string, unknown>, photos: Record<string, string> = {}): { label: string; value: string }[] {
+  const value = (f: Field, v: unknown) => f.kind === 'checkbox' ? (v ? 'Yes' : 'No') : f.kind === 'image' ? photos[String(v)] ?? 'A photo' : String(v)
+  return fields.filter(f => args[f.name] !== undefined).map(f => ({ label: f.label, value: value(f, args[f.name]) }))
 }

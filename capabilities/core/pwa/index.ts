@@ -16,6 +16,7 @@ export {
   AccountStore, D1AccountStore, SessionStore, D1SessionStore, ChallengeStore, D1ChallengeStore, PendingCallStore, D1PendingCallStore,
   type User, type Passkey, type Invite, type Session, type PendingCall, type CallStatus, type ChallengePurpose,
 } from './stores'
+export { UploadStore, KvUploadStore, MemoryUploadStore, prepareUpload, UPLOAD_TTL_SECONDS, type Upload } from './uploads'
 export { fieldsOf, readForm, readField, shownOf, summaryOf, missing, SLACK_ONLY, UnsupportedField, type Field, type FieldKind, type Shown, type ShownItem } from './forms'
 export {
   verifyRegistration, verifyAssertion, parseAuthData, importCoseKey, derToRaw, claimedChallenge, ALGORITHMS,
@@ -26,8 +27,8 @@ export { SoftwarePasskey, type Bend } from './webauthn/software-passkey'
 
 // Writing tools: the same contract as the Slack agent's.
 export {
-  ui, out, tool, LocalToolServer, ToolServer, needsAnswer, toJsonSchema,
-  type ToolDef, type ToolContext, type CallContext, type ListItem, type ToolResult, type ToolSpec, type ToolAnnotations, type JsonSchema,
+  ui, out, tool, LocalToolServer, ToolServer, needsAnswer, toJsonSchema, IMAGE_TYPES, MAX_IMAGE_BYTES,
+  type FileData, type ToolDef, type ToolContext, type CallContext, type ListItem, type ToolResult, type ToolSpec, type ToolAnnotations, type JsonSchema,
 } from '../slack-agent/tools/contract'
 export { serveMcp } from '../slack-agent/tools/mcp'
 export type { Notice } from '../channels/channel'

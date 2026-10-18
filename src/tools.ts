@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { LocalToolServer, out, tool, ui, type AppToolsContext } from '#capabilities'
+import { scanningTools, type LabEnv } from './scanning'
 
 // The automations in this lab's app, for a made-up business, Harbour Plumbing.
 // They're ordinary tools, the same contract the Slack agent uses, so a real
@@ -85,4 +86,4 @@ export const noticeTools = (notify: AppToolsContext['notify']) => new LocalToolS
   }),
 }, { use: 'Testing notifications', personalInfo: [], storesIn: 'Nowhere' })
 
-export const tools = ({ notify }: AppToolsContext) => [jobTools(), quoteTools(), noticeTools(notify)]
+export const tools = (t: AppToolsContext<LabEnv>) => [jobTools(), quoteTools(), noticeTools(t.notify), scanningTools(t)]

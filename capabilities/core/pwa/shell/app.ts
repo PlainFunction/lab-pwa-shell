@@ -68,12 +68,21 @@ const message = (err: unknown) =>
 
 class SignedOut extends Error {}
 
-async function api<T = Json>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch(path, {
-    method, credentials: 'same-origin', cache: 'no-store',
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+const api = <T = Json>(method: string, path: string, body?: unknown) => send<T>(method, path,
+  body === undefined ? {} : { 'content-type': 'application/json' }, body === undefined ? undefined : JSON.stringify(body))
+
+/** Photos chosen in forms, by upload id, so the approval screen can name them. */
+const photos: Record<string, string> = {}
+
+/** A photo for a ui.image field. The Worker names it by its hash, and that id goes in the call. */
+async function upload(file: File): Promise<string> {
+  const { id } = await send<{ id: string }>('POST', '/api/uploads', { 'content-type': file.type, 'x-file-name': encodeURIComponent(file.name) }, file)
+  photos[id] = file.name
+  return id
+}
+
+async function send<T>(method: string, path: string, headers: Record<string, string>, body?: BodyInit): Promise<T> {
+  const res = await fetch(path, { method, credentials: 'same-origin', cache: 'no-store', headers, body })
   const data = await res.json().catch(() => ({}))
   if (res.status === 401) { me = null; signIn(); throw new SignedOut() }
   // Anything that changes who can get in needs a passkey tap: sign what the Worker
@@ -253,7 +262,14 @@ function input(f: Field, value: unknown): HTMLElement {
   if (f.kind === 'textarea') el = h('textarea', { ...common, rows: 4, maxlength: f.maxLength }, value === undefined ? '' : String(value))
   else if (f.kind === 'select') el = h('select', common, h('option', { value: '' }, 'Choose…'), (f.options ?? []).map(o => h('option', { value: o, selected: value === o }, o)))
   else if (f.kind === 'checkbox') el = h('input', { ...common, type: 'checkbox', checked: value === true })
-  else el = h('input', { ...common, type: f.kind, step: f.kind === 'number' ? 'any' : undefined, maxlength: f.maxLength, value: value === undefined ? undefined : String(value), autocomplete: 'off' })
+  else if (f.kind === 'image') {
+    // The file input offers the camera on a phone. Its photo is uploaded on submit and its id kept in the hidden input.
+    const id = typeof value === 'string' ? value : ''
+    el = h('span', null,
+      h('input', { ...common, name: `${f.name}-file`, type: 'file', accept: 'image/jpeg,image/png,image/webp', required: f.required && !id }),
+      h('input', { type: 'hidden', name: f.name, value: id }),
+      id ? h('small', { class: 'muted' }, `Added: ${photos[id] ?? 'a photo'}. Choose another to replace it.`) : null)
+  } else el = h('input', { ...common, type: f.kind, step: f.kind === 'number' ? 'any' : undefined, maxlength: f.maxLength, value: value === undefined ? undefined : String(value), autocomplete: 'off' })
   return h('div', { class: f.kind === 'checkbox' ? 'field check' : 'field' },
     h('label', { for: id }, f.label, f.required ? '' : h('span', { class: 'muted' }, ' (optional)')),
     el,
@@ -274,6 +290,10 @@ function values(formEl: HTMLFormElement, fields: Field[]) {
 function form(t: Tool, o: { args?: Json; answers?: Answer[]; question?: { message: string; schema: Schema } } = {}) {
   const fields = fieldsOf(o.question?.schema ?? t.inputSchema)
   const submit = async (formEl: HTMLFormElement) => {
+    for (const f of fields.filter(f => f.kind === 'image')) {
+      const file = (formEl.elements.namedItem(`${f.name}-file`) as HTMLInputElement | null)?.files?.[0]
+      if (file) (formEl.elements.namedItem(f.name) as HTMLInputElement).value = await upload(file)
+    }
     const filled = values(formEl, fields)
     const empty = missing(fields, filled)
     if (empty.length) throw new Error(`Still needed: ${empty.join(', ')}`)
@@ -300,7 +320,7 @@ async function after(t: Tool, outcome: Json, args: Json, answers: Answer[]) {
 
 /** What's about to happen, and the one tap that approves it. The passkey signs a hash of exactly this. */
 function confirm(t: Tool, outcome: Json, args: Json, answers: Answer[]) {
-  const rows = summaryOf(fieldsOf(t.inputSchema), args)
+  const rows = summaryOf(fieldsOf(t.inputSchema), args, photos)
   show(
     bar(() => fieldsOf(t.inputSchema).length ? form(t, { args, answers }) : home()),
     eyebrow('Needs your passkey'),

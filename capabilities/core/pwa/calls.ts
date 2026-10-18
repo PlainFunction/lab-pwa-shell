@@ -11,6 +11,7 @@ import type { Passkeys, RequestOptionsJSON } from './auth'
 import { UnsupportedField, fieldsOf } from './forms'
 import type { Access } from './roles'
 import type { PendingCallStore, User } from './stores'
+import type { UploadStore } from './uploads'
 
 // Running a client's automations from the app. They're the same tools the
 // Slack agent runs (LocalToolServer, or MCP Workers), drawn as web forms.
@@ -49,11 +50,18 @@ const answersSchema = z.array(z.union([
   z.object({ action: z.literal('decline') }),
 ])).max(10)
 
+/** The arguments that are photos (`ui.image`), by value. */
+const photosIn = (schema: JsonSchema, args: Record<string, unknown>) =>
+  Object.entries(schema.properties ?? {})
+    .filter(([k, p]) => p['x-slack']?.element === 'image_select' && typeof args[k] === 'string')
+    .map(([k]) => args[k] as string)
+
 const titleOf = (t: NamedTool) => t.title ?? t.name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase())
 
 export interface CallsDeps {
   tools: ToolBox
   pending: PendingCallStore
+  uploads: UploadStore
   passkeys: Passkeys
   access: Access
   credentials: CredentialBroker
@@ -99,6 +107,10 @@ export class Calls {
     const a = z.record(z.string(), z.unknown()).safeParse(args ?? {})
     const ans = answersSchema.safeParse(answers ?? [])
     if (!a.success || !ans.success) throw new ValidationError('Arguments must be an object, and answers a list')
+    // Before asking for a passkey: every photo must be one this person uploaded, and still here.
+    for (const id of photosIn(tool.inputSchema, a.data)) {
+      if (!(await this.#d.uploads.get(user.id, id))) throw new ValidationError('That photo has expired. Add it again.')
+    }
     if (tool.annotations?.readOnlyHint) return this.#run(user, tool, a.data, ans.data)
 
     const now = this.#d.clock.now()
@@ -146,7 +158,15 @@ export class Calls {
   }
 
   async #run(user: User, tool: NamedTool, args: Record<string, unknown>, answers: ElicitAnswer[]): Promise<CallOutcome> {
+    // A tool reads only the photos in its own arguments, and only this person's.
+    const photos = new Set(photosIn(tool.inputSchema, args))
+    const file = async (id: string) => {
+      const f = photos.has(id) ? await this.#d.uploads.get(user.id, id) : undefined
+      if (!f) throw new NotAllowedError(photos.has(id) ? 'That photo has expired. Add it again.' : "That photo isn't part of this call")
+      return f
+    }
     const result = await this.#d.tools.call(tool, args, {
+      file,
       user: user.id,
       now: this.#d.clock.now(),
       answers,

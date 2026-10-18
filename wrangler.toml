@@ -53,6 +53,17 @@ database_id = "<d1 id>"
 binding = "KV"
 id = "<kv id>"                           # wrangler kv namespace create pwa-shell
 
+# Scanned paperwork: the original of every photo the scanning automation files.
+[[r2_buckets]]
+binding = "SCANS"
+bucket_name = "pwa-shell-scans"          # wrangler r2 bucket create pwa-shell-scans --location oc
+
+# Reading photos for real. Without it, scanning reads every photo as a sample
+# receipt, so it works in wrangler dev with no Cloudflare login. Workers AI
+# always runs on Cloudflare, so with this on, wrangler dev needs `wrangler login`.
+# [ai]
+# binding = "AI"
+
 # Secrets (wrangler secret put <NAME> --config wrangler.toml):
 #   KEYRING            {"current":"k1","keys":{"k1":"<32 random bytes, base64>"}}
 #   VAPID_PRIVATE_KEY  for notifications (npm run dev:secrets makes a pair)

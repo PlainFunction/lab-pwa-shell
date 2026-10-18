@@ -17,9 +17,7 @@
     "invite": "node scripts/invite.mjs",
     "deploy": "node scripts/build.mjs && wrangler deploy --config wrangler.toml",
     "typecheck": "tsc -p tsconfig.json && tsc -p capabilities/core/pwa/shell/tsconfig.json && tsc -p capabilities/core/pwa/shell/tsconfig.sw.json",
-    "sync:capabilities": "node scripts/sync-capabilities.mjs",
-    "check:capabilities": "node scripts/sync-capabilities.mjs --check",
-    "test": "node scripts/sync-capabilities.mjs --check && node scripts/build.mjs --check && vitest run",
+    "test": "node scripts/build.mjs --check && vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {

@@ -11,6 +11,7 @@ import type { Roles } from '#capabilities'
 // The operator's script makes the first person an `admin`.
 export const roles: Roles = {
   admin: { label: 'Owner', can: ['*'] },
-  office: { label: 'Office', can: ['tool:jobs__*', 'tool:quotes__*', 'invite', 'see:prices'], invites: ['tradie'] },
-  tradie: { label: 'Tradie', can: ['tool:jobs__today'] },
+  office: { label: 'Office', can: ['tool:jobs__*', 'tool:quotes__*', 'tool:scans__*', 'invite', 'see:prices'], invites: ['tradie'] },
+  // Tradies scan the dockets and job sheets they collect, but don't see the list of everyone's scans.
+  tradie: { label: 'Tradie', can: ['tool:jobs__today', 'tool:scans__scan'] },
 }

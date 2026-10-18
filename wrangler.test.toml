@@ -11,3 +11,7 @@ id = "test-kv"
 binding = "DB"
 database_name = "test-db"
 database_id = "test-db"
+
+[[r2_buckets]]
+binding = "SCANS"
+bucket_name = "test-scans"

@@ -11,6 +11,8 @@ import { Calls } from './calls'
 import { PwaModule, RELYING_PARTY, type PwaEnv, type PwaOptions } from './module'
 import { Access } from './roles'
 import type { User } from './stores'
+import { UploadStore, prepareUpload } from './uploads'
+import { MAX_IMAGE_BYTES } from '../slack-agent/tools/contract'
 
 // The driving side. The shell (HTML, JS, CSS, icons, the service worker) is
 // static assets and never runs this code; only /api/* does. The shell holds
@@ -43,11 +45,13 @@ interface Route {
   pattern: RegExp
   /** Needs a session. */
   auth: boolean
-  run(x: { c: Registry; env: PwaEnv; request: Request; body: Record<string, unknown>; params: string[]; me?: SignedIn }): Promise<Response>
+  /** Takes the request body as bytes up to this size, not JSON. Only photo uploads. */
+  raw?: number
+  run(x: { c: Registry; env: PwaEnv; request: Request; body: Record<string, unknown>; bytes?: Uint8Array<ArrayBuffer>; params: string[]; me?: SignedIn }): Promise<Response>
 }
 
-const route = (method: string, path: string, auth: boolean, run: Route['run']): Route => ({
-  method, path, auth, run,
+const route = (method: string, path: string, auth: boolean, run: Route['run'], raw?: number): Route => ({
+  method, path, auth, run, raw,
   pattern: new RegExp(`^${path.replace(/:\w+/g, '([A-Za-z0-9_-]{1,1400})')}$`),
 })
 
@@ -116,6 +120,17 @@ const ROUTES: Route[] = [
   }),
 
   route('GET', '/api/tools', true, async x => json({ tools: await x.c.get(Calls).list(me(x)) })),
+  // A photo for a form's ui.image field: the bytes as the body, its type as
+  // Content-Type, and its file name (URI-encoded) in X-File-Name. The answer's
+  // id goes in the call's arguments.
+  route('POST', '/api/uploads', true, async x => {
+    let name = 'photo'
+    try { name = decodeURIComponent(x.request.headers.get('x-file-name') ?? 'photo') } catch { /* keep the default */ }
+    const type = (x.request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
+    const upload = await prepareUpload(x.bytes!, type, name)
+    await x.c.get(UploadStore).put(me(x).id, upload, x.bytes!)
+    return json(upload)
+  }, MAX_IMAGE_BYTES),
   route('POST', '/api/calls', true, async x =>
     json(await x.c.get(Calls).start(me(x), str(x.body.tool, 'tool'), x.body.args, x.body.answers))),
   route('POST', '/api/calls/:id/confirm', true, async x =>
@@ -195,11 +210,21 @@ function match(request: Request, url: URL): Matched {
 async function handle(r: Route, params: string[], request: Request, c: Registry, env: PwaEnv): Promise<Response> {
   try {
     let body: Record<string, unknown> = {}
+    let bytes: Uint8Array<ArrayBuffer> | undefined
     if (request.method !== 'GET') {
       // Only our own pages can change anything.
       const { origin } = c.get(RELYING_PARTY)
       if (request.headers.get('origin') !== origin) throw new NotAllowedError(`This app only works at ${origin}`)
-      if (Number(request.headers.get('content-length') ?? 0) > MAX_BODY) return json({ error: 'Too big' }, 413)
+      const limit = r.raw ?? MAX_BODY
+      if (Number(request.headers.get('content-length') ?? 0) > limit) return json({ error: 'Too big' }, 413)
+      // Signed in before a big body is read, not after.
+      if (r.raw) {
+        const signedIn = await c.get(Sessions).read(request)
+        if (!signedIn) throw new Unauthorised()
+        bytes = new Uint8Array(await request.arrayBuffer())
+        if (bytes.length > limit) return json({ error: 'Too big' }, 413)
+        return await r.run({ c, env, request, body, bytes, params, me: signedIn })
+      }
       const raw = await request.text()
       if (raw.length > MAX_BODY) return json({ error: 'Too big' }, 413)
       if (raw) {

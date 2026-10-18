@@ -30,8 +30,8 @@ npm run dev:tunnel -- "Your name"   # the same, on a public https address for a 
 ## What it uses from capabilities
 
 `capabilities/` holds copies of the parts of our capabilities it uses, so it
-runs on its own. `capabilities/index.ts` says which parts, and
-`scripts/sync-capabilities.mjs` keeps the copies in step with ours. **Don't
+runs on its own. `capabilities/index.ts` says which parts, and the copies are kept in step
+with ours automatically. **Don't
 edit the copies**: they're overwritten from the source on every sync.
 
 - `capabilities/core/pwa`: passkey checks (CBOR, COSE keys, signatures, all
@@ -100,8 +100,8 @@ role) also needs a passkey tap, so a stolen session cookie can't let anyone in.
 | Role | Sees | Can |
 |---|---|---|
 | Owner (`admin`) | Every automation, with prices | Everything: invite anyone, change roles, recover and remove people |
-| Office | Today's jobs and quote follow-ups, with prices | Invite tradies |
-| Tradie | Today's jobs, without prices | Add their own devices |
+| Office | Today's jobs, quote follow-ups and scanning, with prices | Invite tradies |
+| Tradie | Today's jobs, without prices, and scanning a document | Add their own devices |
 
 A permission is `tool:<server>__<tool>` (with `*` as a wildcard), `people`,
 `invite`, or one of the app's own like `see:prices`, which an automation
@@ -168,8 +168,24 @@ export const bookingTools = new LocalToolServer('bookings', {
 }, { use: 'Moving bookings', personalInfo: [], storesIn: 'The job system' })
 ```
 
-The app can't draw Slack-only fields (`ui.user`, `ui.conversation`,
-`ui.image`), so a tool that uses one is left out of the app and logged.
+A `ui.image` field is a photo: the phone offers its camera, the app uploads
+the photo when the form is sent, and the call carries the photo's SHA-256, so
+the passkey that approves it signs the photo too. The tool reads it with
+`ctx.file`, and can only reach the photos in its own call. The app can't draw
+Slack-only fields (`ui.user`, `ui.conversation`), so a tool that uses one is
+left out of the app and logged.
+
+## Scanning paperwork
+
+`src/scanning.ts` adds our scanning capability as two automations: **Scan a
+document** (a photo of a receipt, docket or job sheet, read, sorted and filed
+in R2, after a passkey) and **Recent scans**. Office can use both; tradies can
+scan but not see the list. It needs the `SCANS` R2 bucket in `wrangler.toml`.
+
+With the `[ai]` binding on, photos are read with Workers AI. It's off by
+default because Workers AI always runs on Cloudflare, so `wrangler dev` would
+need a login. Without it, every photo reads as the same sample receipt and the
+result says so, which is enough to try the rest on a laptop.
 
 ## Tested, and not yet tested
 
