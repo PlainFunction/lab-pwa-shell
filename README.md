@@ -1,6 +1,6 @@
 # Lab 006: a private app on the phone, signed in with a passkey
 
-The code behind our lab [A Private App on the Phone, No App Store](https://plainfunction.com.au/labs/pwa-shell).
+The code behind our lab [We Put an App on Our Phones Without the App Store](https://plainfunction.com.au/labs/pwa-shell).
 It's an installable web app (a PWA) for one business. People sign in with a
 passkey (Face ID, a fingerprint or the device PIN), run the business's
 automations from simple forms, and approve anything that changes something
