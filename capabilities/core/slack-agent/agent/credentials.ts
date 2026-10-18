@@ -7,6 +7,8 @@ import { HttpClient, type Fetch } from '../../security/egress'
 // account connected from Slack by OAuth (sealed in the vault), or else a
 // Worker secret on this Worker (CREDENTIAL_<NAME>), set with our secrets
 // tooling. Neither can be read back, and each can only go to its own hosts.
+// A credential can also list upload hosts: presigned storage URLs its API
+// hands out, which tools reach in its name but never with it attached.
 
 /** Where connected accounts' tokens come from. ConnectedAccounts in production. */
 export interface ConnectedTokens {
@@ -14,19 +16,31 @@ export interface ConnectedTokens {
   hosts(): Record<string, string[]>
 }
 
+/**
+ * Hosts per credential: the hosts it's sent to, or those plus `uploads`, hosts
+ * reached in its name without it (a presigned upload URL carries its own signature).
+ */
+export type CredentialHosts = Record<string, string[] | { hosts: string[]; uploads?: string[] }>
+
 export class CredentialBroker extends Port {
   readonly #secrets: SecretStore
   readonly #hosts: Record<string, string[]>
+  readonly #uploads: Record<string, string[]>
   readonly #audit: AuditLog
   readonly #connected?: ConnectedTokens
   readonly #fetch?: Fetch
 
-  /** `hosts` maps a credential name to the hosts it may be sent to, e.g. `{ github: ['api.github.com'] }`. */
-  constructor(o: { secrets: SecretStore; hosts: Record<string, string[]>; audit: AuditLog; connected?: ConnectedTokens; fetch?: Fetch }) {
+  /**
+   * `hosts` maps a credential name to the hosts it may be sent to, e.g. `{ github: ['api.github.com'] }`,
+   * or `{ zernio: { hosts: ['zernio.com'], uploads: ['*.r2.cloudflarestorage.com'] } }`.
+   */
+  constructor(o: { secrets: SecretStore; hosts: CredentialHosts; audit: AuditLog; connected?: ConnectedTokens; fetch?: Fetch }) {
     super()
     this.#secrets = o.secrets
+    const entries = Object.entries(o.hosts).map(([name, h]) => [name, Array.isArray(h) ? { hosts: h } : h] as const)
     // A provider's hosts win: they're what the token was issued for.
-    this.#hosts = { ...o.hosts, ...o.connected?.hosts() }
+    this.#hosts = { ...Object.fromEntries(entries.map(([n, h]) => [n, h.hosts])), ...o.connected?.hosts() }
+    this.#uploads = Object.fromEntries(entries.map(([n, h]) => [n, h.uploads ?? []]))
     this.#audit = o.audit
     this.#connected = o.connected
     this.#fetch = o.fetch
@@ -38,6 +52,16 @@ export class CredentialBroker extends Port {
     if (!credential) throw new NotAllowedError('Tools call out only with a named credential')
     const hosts = Object.hasOwn(this.#hosts, credential) ? this.#hosts[credential] : undefined
     if (!hosts?.length) throw new NotAllowedError(`No credential called ${credential}`)
+
+    // An upload host gets the request as the tool wrote it. The credential never goes there.
+    const uploads = Object.hasOwn(this.#uploads, credential) ? this.#uploads[credential] : []
+    const upload = new HttpClient({ service: `credential ${credential} uploads`, allow: uploads, fetch: this.#fetch })
+    if (upload.allows(new URL(url))) {
+      const res = await upload.request(url, rest)
+      await this.#audit.record({ actor: `system:${who.tool}`, action: 'credential.upload', subject: `credential:${credential}`, detail: { host: new URL(url).hostname, status: res.status } })
+      return res
+    }
+
     const http = new HttpClient({ service: `credential ${credential}`, allow: hosts, fetch: this.#fetch })
     const secret = (await this.#connected?.token(credential))
       ?? (await this.#secrets.optional(`CREDENTIAL_${credential.toUpperCase()}`))?.reveal()
@@ -61,7 +85,7 @@ export class CredentialBroker extends Port {
       use: 'Attaching an API key to a tool\'s request without the tool seeing it',
       personalInfo: [],
       storesIn: 'Connected accounts in the D1 vault, or Worker secrets (CREDENTIAL_<NAME>)',
-      egress: [...new Set(Object.values(this.#hosts).flat())],
+      egress: [...new Set([...Object.values(this.#hosts), ...Object.values(this.#uploads)].flat())],
     }
   }
 }

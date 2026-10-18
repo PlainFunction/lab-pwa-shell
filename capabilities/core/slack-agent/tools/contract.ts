@@ -11,6 +11,10 @@ export type SlackInput =
   | 'datepicker' | 'timepicker' | 'static_select' | 'checkboxes' | 'users_select' | 'conversations_select'
   /** Ours, not Slack's: a pick of the images attached in the conversation. */
   | 'image_select'
+  /** Ours, not Slack's: a pick of the text files attached in the conversation. */
+  | 'document_select'
+  /** Ours, not Slack's: a pick of several images in the conversation, in order (a carousel). */
+  | 'images_select'
 export type SlackOutput = 'header' | 'field' | 'text' | 'context' | 'image' | 'link' | 'list'
 
 /** One row of an `out.list`: a job, a quote, an invoice. */
@@ -29,8 +33,17 @@ export const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'
 /** Bigger images are refused both ways, so one photo can't fill a Worker's memory. */
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
-/** An image someone attached, as the conversation keeps it. The bytes stay in Slack until a tool asks. */
+/** A file someone attached (an image or a text file), as the conversation keeps it. The bytes stay in Slack until a tool asks. */
 export interface FileRef { id: string; name: string; mimetype: string; size: number }
+
+export const isImage = (f: { mimetype: string }) => (IMAGE_TYPES as readonly string[]).includes(f.mimetype)
+
+/** The form elements that take a file from the conversation, and which kind each takes. */
+export const FILE_ELEMENTS: Partial<Record<SlackInput, 'image' | 'document'>> = { image_select: 'image', images_select: 'image', document_select: 'document' }
+/** The ids a file field's value names: one, or several for `ui.images`. */
+export const fileIds = (v: unknown): string[] => (Array.isArray(v) ? v : [v]).filter((x): x is string => typeof x === 'string')
+/** The conversation's files a field of this kind can take. */
+export const filesOfKind = (files: FileRef[], kind: 'image' | 'document') => files.filter(f => isImage(f) === (kind === 'image'))
 /** What `ctx.file` hands a tool. */
 export interface FileData { id: string; name: string; mimetype: string; bytes: Uint8Array }
 
@@ -71,6 +84,19 @@ export const ui = {
    * id; read it with `ctx.file(id)`. In a form it's a pick of the attached images.
    */
   image: (label: string, o?: FieldOptions) => hint(z.string().regex(SLACK_FILE_ID), { element: 'image_select', label }, o),
+  /**
+   * A text file someone attached in this conversation (Markdown, plain text,
+   * CSV, JSON). The value is its Slack file id; read it with `ctx.file(id)` and
+   * decode the bytes. In a form it's a pick of the attached text files.
+   */
+  document: (label: string, o?: FieldOptions) => hint(z.string().regex(SLACK_FILE_ID), { element: 'document_select', label }, o),
+  /**
+   * Several images in this conversation, in order: a carousel. The value is a
+   * list of Slack file ids, each read with `ctx.file(id)`. In a form it's a
+   * multi-pick of the conversation's images.
+   */
+  images: (label: string, o?: FieldOptions & { max?: number }) =>
+    hint(z.array(z.string().regex(SLACK_FILE_ID)).min(1).max(o?.max ?? 10), { element: 'images_select', label }, o),
 }
 
 export const out = {
@@ -79,11 +105,12 @@ export const out = {
   text: (label: string) => hint(z.string(), { element: 'text', label }),
   context: (label: string) => hint(z.string(), { element: 'context', label }),
   /**
-   * An image: an https URL Slack can fetch, or one the tool made, as a
-   * `data:image/png;base64,...` URL, which the agent uploads to the thread.
-   * The model sees that an image was shown, never the bytes.
+   * An image: an https URL Slack can fetch, one the tool made, as a
+   * `data:image/png;base64,...` URL, which the agent uploads to the thread, or
+   * the id of one already in the conversation (an unchanged slide, say), which
+   * isn't shown again. The model sees ids, never the bytes.
    */
-  image: (label: string) => hint(z.union([httpsUrl, z.string().regex(DATA_IMAGE).max(Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 64)]), { element: 'image', label }),
+  image: (label: string) => hint(z.union([httpsUrl, z.string().regex(DATA_IMAGE).max(Math.ceil(MAX_IMAGE_BYTES * 4 / 3) + 64), z.string().regex(SLACK_FILE_ID)]), { element: 'image', label }),
   /** A link, shown as the label pointing at the URL. https only. */
   link: (label: string) => hint(httpsUrl, { element: 'link', label }),
   /** Rows, each a title with an optional detail line and a short meta, like a time or an amount. Up to 50. */
@@ -95,6 +122,12 @@ export interface ToolAnnotations {
   readOnlyHint?: boolean
   /** Deletes or overwrites something. Always asks unless the settings say otherwise. */
   destructiveHint?: boolean
+  /**
+   * Its result is for the person to look at (a draft, say). The agent runs it at
+   * most once per message and then replies, whatever the model asks for. Without
+   * this, a small model that liked the result kept calling it again.
+   */
+  oncePerTurnHint?: boolean
 }
 
 /** What the caller gives a tool server for one call. */
@@ -109,7 +142,7 @@ export interface CallContext {
   fetch(url: string, init?: RequestInit & { credential?: string }): Promise<Response>
   /** Answers to this call's follow-up questions so far, in the order they were asked. */
   answers?: ElicitAnswer[]
-  /** An image attached in this conversation, by id. Anything else is refused. */
+  /** A file attached or made in this conversation, by id. Anything else is refused. */
   file?(id: string): Promise<FileData>
   /**
    * Whether the person asking holds a permission, e.g. `ctx.can?.('see:prices')`,
@@ -127,7 +160,7 @@ export interface Elicitation { message: string; schema: JsonSchema }
 
 /** What a tool's `run` gets. */
 export interface ToolContext extends Omit<CallContext, 'answers' | 'file'> {
-  /** Reads an image attached in this conversation (a `ui.image` value). */
+  /** Reads a file attached or made in this conversation (a `ui.image` or `ui.document` value). */
   file(id: string): Promise<FileData>
   /**
    * Asks the person something partway through. The call stops here, the
@@ -210,10 +243,10 @@ export const toJsonSchema = (schema: z.ZodType, io: 'input' | 'output'): JsonSch
   return rest as JsonSchema
 }
 
-/** Slack forms are flat, and every field needs a hint, or the server won't start. The one list allowed is `out.list`. */
+/** Slack forms are flat, and every field needs a hint, or the server won't start. The lists allowed are `out.list` and `ui.images`. */
 function checkHints(where: string, schema: JsonSchema) {
   for (const [key, prop] of Object.entries(schema.properties ?? {})) {
-    const list = prop.type === 'array' && prop['x-slack']?.element === 'list'
+    const list = prop.type === 'array' && (prop['x-slack']?.element === 'list' || prop['x-slack']?.element === 'images_select')
     if ((prop.type === 'object' || prop.type === 'array') && !list) throw new ConfigError(`${where}.${key}: Slack forms are flat, so no nested objects or lists`)
     if (!prop['x-slack']) throw new ConfigError(`${where}.${key} has no Slack hint. Use ui.* for inputs and out.* for outputs`)
   }
@@ -271,7 +304,7 @@ export class LocalToolServer extends ToolServer {
 
     let raw: unknown
     try {
-      const read = file ?? (async () => { throw new NotAllowedError('No images are available to this call') })
+      const read = file ?? (async () => { throw new NotAllowedError('No files are available to this call') })
       raw = await def.run(input.data, { ...rest, elicit, file: read })
     } catch (err) {
       if (err instanceof ElicitationNeeded) return { ok: false, error: err.message, elicit: err.elicitation }

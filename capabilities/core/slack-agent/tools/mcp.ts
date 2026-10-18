@@ -3,7 +3,7 @@ import { ConfigError, NotAllowedError, UpstreamError } from '../../kernel/errors
 import type { Manifest } from '../../kernel/port'
 import type { SecretRef } from '../../secrets/secrets'
 import { HttpClient, type Fetch } from '../../security/egress'
-import { LocalToolServer, MAX_IMAGE_BYTES, NAME, ToolServer, needsAnswer, type CallContext, type ElicitAnswer, type Elicitation, type FileData, type ToolResult, type ToolSpec } from './contract'
+import { FILE_ELEMENTS, LocalToolServer, fileIds, MAX_IMAGE_BYTES, NAME, ToolServer, needsAnswer, type SlackInput, type CallContext, type ElicitAnswer, type Elicitation, type FileData, type ToolResult, type ToolSpec } from './contract'
 
 // The four JSON-RPC methods a tool server needs, over plain HTTP POST with no
 // session. That's enough for our own tool Workers (over a service binding) and
@@ -25,7 +25,7 @@ interface McpCallResult {
 // just see an error saying what was needed.
 const ELICIT = 'slack/elicit'
 const ANSWERS = 'slack/answers'
-// A tool Worker can't reach Slack, so the images its arguments name travel with
+// A tool Worker can't reach Slack, so the files its arguments name travel with
 // the call, base64, and its ctx.file reads them from there. Only those.
 const FILES = 'slack/files'
 
@@ -84,15 +84,15 @@ export class McpToolServer extends ToolServer {
     return this.#specs
   }
 
-  /** The images a call's arguments name, read with ctx.file, to send along. */
+  /** The files a call's arguments name (images and text files), read with ctx.file, to send along. */
   async #files(tool: string, args: Record<string, unknown>, ctx: CallContext): Promise<Record<string, SentFile>> {
     const spec = (await this.list()).find(t => t.name === tool)
     const ids = Object.entries(spec?.inputSchema.properties ?? {})
-      .filter(([k, p]) => p['x-slack']?.element === 'image_select' && typeof args[k] === 'string')
-      .map(([k]) => args[k] as string)
+      .filter(([, p]) => !!FILE_ELEMENTS[p['x-slack']?.element as SlackInput])
+      .flatMap(([k]) => fileIds(args[k]))
     const out: Record<string, SentFile> = {}
     for (const id of new Set(ids)) {
-      if (!ctx.file) throw new NotAllowedError('No images are available to this call')
+      if (!ctx.file) throw new NotAllowedError('No files are available to this call')
       const f = await ctx.file(id)
       out[id] = { name: f.name, mimetype: f.mimetype, data: b64url(f.bytes) }
     }
@@ -101,7 +101,7 @@ export class McpToolServer extends ToolServer {
 
   async call(tool: string, args: Record<string, unknown>, ctx: CallContext): Promise<ToolResult> {
     let files: Record<string, SentFile>
-    try { files = await this.#files(tool, args, ctx) } catch (err) { return { ok: false, error: err instanceof NotAllowedError ? err.message : "Couldn't read that image" } }
+    try { files = await this.#files(tool, args, ctx) } catch (err) { return { ok: false, error: err instanceof NotAllowedError ? err.message : "Couldn't read that file" } }
     const r = await this.#rpc<McpCallResult>('tools/call', { name: tool, arguments: args, _meta: { 'slack/user': ctx.user, [ANSWERS]: ctx.answers ?? [], ...(Object.keys(files).length ? { [FILES]: files } : {}) } })
     const text = (r.content ?? []).filter(c => c.type === 'text').map(c => c.text ?? '').join('\n')
     const question = r._meta?.[ELICIT]
@@ -143,9 +143,9 @@ export function serveMcp(server: LocalToolServer, info: { version: string } = { 
       const sent = (meta[FILES] && typeof meta[FILES] === 'object' ? meta[FILES] : {}) as Record<string, SentFile>
       const file = async (fileId: string): Promise<FileData> => {
         const f = Object.hasOwn(sent, fileId) ? sent[fileId] : undefined
-        if (!f || typeof f.data !== 'string') throw new NotAllowedError("That image wasn't sent with this call")
+        if (!f || typeof f.data !== 'string') throw new NotAllowedError("That file wasn't sent with this call")
         const bytes = fromB64(f.data)
-        if (bytes.byteLength > MAX_IMAGE_BYTES) throw new NotAllowedError('That image is too big')
+        if (bytes.byteLength > MAX_IMAGE_BYTES) throw new NotAllowedError('That file is too big')
         return { id: fileId, name: String(f.name), mimetype: String(f.mimetype), bytes }
       }
       const ctx: CallContext = {

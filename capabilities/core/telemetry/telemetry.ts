@@ -40,7 +40,7 @@ export interface LogRecord { severity: Severity; body: string; attributes?: Attr
 
 /** Who is reporting. Becomes the OTLP resource, and Loki's `service_name`. */
 export interface TelemetryResource {
-  /** e.g. `pf-harbour-plumbing` */
+  /** e.g. `pf-plain-function` */
   serviceName: string
   serviceVersion: string
   environment: string
