@@ -1,5 +1,8 @@
 import { Port, type Manifest } from '../kernel/port'
 import type { InboundFile } from '../ai/document-reader'
+import { ValidationError } from '../kernel/errors'
+import { fromUtf8, sha256Hex, utf8 } from '../kernel/encoding'
+import type { Cipher } from '../security/cipher'
 
 // Where scanned originals are kept. The paper usually goes in the bin once it's
 // scanned, so the original photo or PDF is the record, not the text we read
@@ -40,32 +43,42 @@ const KEY = (id: string) => `scans/${id}`
  * R2, in the client's own bucket (create it with `--jurisdiction` or
  * `--location oc` so it stays in Australia). The record rides along as custom
  * metadata, so one list call gives the recent scans without a database.
+ *
+ * The original and its record are both sealed with the client's `Cipher`, bound
+ * to the scan's id, so a leaked bucket token reads nothing and a sealed file
+ * can't be passed off as another scan. Scans from before sealing (no `sealed`
+ * metadata) still open as they are. How long they're kept is an R2 lifecycle
+ * rule on the bucket, not code.
  */
 export class R2ScanStore extends ScanStore {
   readonly #bucket: R2Bucket
-  constructor(bucket: R2Bucket) {
+  readonly #cipher: Cipher
+  constructor(bucket: R2Bucket, cipher: Cipher) {
     super()
     this.#bucket = bucket
+    this.#cipher = cipher
   }
 
   async get(id: string) {
     const head = await this.#bucket.head(KEY(id))
-    return head ? readRecord(head) : undefined
+    return head ? this.#readRecord(head) : undefined
   }
 
   async put(file: InboundFile, record: ScanRecord) {
-    await this.#bucket.put(KEY(record.id), file.bytes, {
-      httpMetadata: { contentType: file.type },
-      customMetadata: { record: JSON.stringify(record) },
-      sha256: record.id,
+    if (await sha256Hex(file.bytes) !== record.id) throw new ValidationError('The file does not match the hash it is filed under')
+    await this.#bucket.put(KEY(record.id), utf8(await this.#cipher.encrypt(file.bytes, `scan:${record.id}`)), {
+      httpMetadata: { contentType: 'application/octet-stream' },
+      customMetadata: { sealed: '1', record: await this.#cipher.encrypt(utf8(JSON.stringify(record)), `scan:${record.id}:record`) },
     })
   }
 
   async open(id: string) {
     const obj = await this.#bucket.get(KEY(id))
-    const record = obj && readRecord(obj)
+    const record = obj && await this.#readRecord(obj)
     if (!obj || !record) return undefined
-    return { record, bytes: new Uint8Array(await obj.arrayBuffer()) }
+    const body = new Uint8Array(await obj.arrayBuffer())
+    if (obj.customMetadata?.sealed !== '1') return { record, bytes: body }
+    return { record, bytes: await this.#cipher.decrypt(fromUtf8(body), `scan:${id}`) }
   }
 
   async recent(limit: number) {
@@ -76,21 +89,24 @@ export class R2ScanStore extends ScanStore {
     do {
       // `include` is honoured from compatibility date 2022-08-04; the default types predate it.
       const page = await this.#bucket.list({ prefix: 'scans/', include: ['customMetadata'], cursor } as R2ListOptions)
-      for (const o of page.objects) { const r = readRecord(o); if (r) out.push(r) }
+      for (const o of page.objects) { const r = await this.#readRecord(o); if (r) out.push(r) }
       cursor = page.truncated ? page.cursor : undefined
     } while (cursor)
     return out.sort((a, b) => b.scannedAt.localeCompare(a.scannedAt)).slice(0, limit)
   }
 
   describe(): Manifest {
-    return { name: 'Scans (Cloudflare R2)', use: 'Keeping the original of every scanned document', personalInfo: ['whatever is on the paper: names, addresses, signatures'], storesIn: 'Cloudflare R2, the client\'s own bucket in Australia' }
+    return { name: 'Scans (Cloudflare R2)', use: 'Keeping the original of every scanned document, sealed', personalInfo: ['whatever is on the paper: names, addresses, signatures'], storesIn: "Cloudflare R2, the client's own bucket in Australia, for as long as its lifecycle rule says" }
   }
-}
 
-function readRecord(o: { customMetadata?: Record<string, string> }): ScanRecord | undefined {
-  const raw = o.customMetadata?.record
-  if (!raw) return undefined
-  try { return JSON.parse(raw) as ScanRecord } catch { return undefined }
+  async #readRecord(o: { key: string; customMetadata?: Record<string, string> }): Promise<ScanRecord | undefined> {
+    const raw = o.customMetadata?.record
+    if (!raw) return undefined
+    try {
+      if (o.customMetadata?.sealed !== '1') return JSON.parse(raw) as ScanRecord
+      return await this.#cipher.decryptJson<ScanRecord>(raw, `scan:${o.key.slice('scans/'.length)}:record`)
+    } catch { return undefined }
+  }
 }
 
 /** For tests and dry runs. */

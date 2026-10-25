@@ -1,5 +1,5 @@
 import {
-  AuditLog, Clock, DEFAULT_GATEWAY, DocumentReader, DocumentScanner, Logger, R2ScanStore, ScriptedLanguageModel, WorkersAiDocumentReader, WorkersAiModel,
+  AuditLog, Cipher, Clock, DEFAULT_GATEWAY, DocumentReader, DocumentScanner, Logger, R2ScanStore, ScriptedLanguageModel, WorkersAiDocumentReader, WorkersAiModel,
   scanTools, type AppToolsContext, type PwaEnv,
 } from '#capabilities'
 
@@ -30,7 +30,7 @@ class SampleReader extends DocumentReader {
 }
 
 export function scanningTools({ env, registry }: AppToolsContext<LabEnv>) {
-  const store = new R2ScanStore(env.SCANS)
+  const store = new R2ScanStore(env.SCANS, registry.get(Cipher))
   const ai = env.AI
   const gateway = { id: env.AI_GATEWAY_ID || DEFAULT_GATEWAY }
   const scanner = new DocumentScanner({

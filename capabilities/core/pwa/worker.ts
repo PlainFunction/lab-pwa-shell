@@ -3,6 +3,7 @@ import { WebPushNotifier, type PushSubscription } from '../channels/web-push'
 import { CapabilityError, ConflictError, NotAllowedError, ValidationError } from '../kernel/errors'
 import { fromB64url } from '../kernel/encoding'
 import { Logger } from '../kernel/logger'
+import { SWITCHED_OFF, switchedOff } from '../kernel/off-switch'
 import type { Module, Registry } from '../kernel/registry'
 import { HttpClient } from '../security/egress'
 import { Telemetry, type SpanOptions } from '../telemetry/telemetry'
@@ -263,6 +264,9 @@ export function createPwaWorker<E extends PwaEnv>(opts: { module: (env: E) => Mo
       const url = new URL(request.url)
       // With run_worker_first = ["/api/*"] nothing else gets here. If it does, it's the shell.
       if (!url.pathname.startsWith('/api/')) return env.ASSETS ? env.ASSETS.fetch(request) : new Response('Not found', { status: 404 })
+      // Switched off, the shell still loads and says so; nothing behind it runs. The cron
+      // only forgets used-up sessions and calls, so it carries on.
+      if (await switchedOff(env.KV)) return json({ error: SWITCHED_OFF }, 503)
       const c = registryFor(env)
       const m = match(request, url)
       const path = 'r' in m ? m.r.path : m.path

@@ -79,7 +79,8 @@ To deploy:
    `wrangler kv namespace create pwa-shell`, and put the ids in `wrangler.toml`.
 2. Set `PUBLIC_URL` to the address the app will keep. Passkeys are tied to its
    host name, so moving the app to a new address means everyone sets up again.
-   Use a custom domain for a real business, not `workers.dev`.
+   Uncomment `routes` with the same host: workers.dev is off, so the custom
+   domain is the only address it has.
 3. `npm run db:remote`, then `wrangler secret put KEYRING --config wrangler.toml`
    and `wrangler secret put VAPID_PRIVATE_KEY --config wrangler.toml`, and put
    `VAPID_PUBLIC_KEY` in `wrangler.toml`'s vars.
@@ -181,11 +182,33 @@ left out of the app and logged.
 document** (a photo of a receipt, docket or job sheet, read, sorted and filed
 in R2, after a passkey) and **Recent scans**. Office can use both; tradies can
 scan but not see the list. It needs the `SCANS` R2 bucket in `wrangler.toml`.
+Originals are sealed with `KEYRING`. Give the bucket an expiry, so a scan
+isn't kept forever (seven years covers the ATO's five from lodgement):
+
+```bash
+npx wrangler r2 bucket lifecycle add pwa-shell-scans expire-scans scans/ --expire-days 2557
+```
 
 With the `[ai]` binding on, photos are read with Workers AI. It's off by
 default because Workers AI always runs on Cloudflare, so `wrangler dev` would
 need a login. Without it, every photo reads as the same sample receipt and the
 result says so, which is enough to try the rest on a laptop.
+
+## Switching it off
+
+`npm run off -- --remote` stops it without a deploy. The app still opens, and
+everything behind it says nothing was done. The hourly cron only forgets
+used-up sessions and invites, so it carries on. `npm run on -- --remote` starts it
+again. It's a KV key, so it can take a minute to reach everywhere.
+
+## If a key leaks
+
+Switch it off first, then replace the one that leaked:
+
+- **`KEYRING`**: add a new key to the JSON, point `current` at it, and `wrangler secret put KEYRING --config wrangler.toml`. New data is sealed with the new key and old data still opens. Anything sealed before then stays under the old key until it's sealed again, so drop the old key once that data has expired.
+- **`VAPID_PRIVATE_KEY`**: `npm run dev:secrets` makes a new pair. Put both, and everyone turns notifications on again.
+- **`CREDENTIAL_<NAME>`**: make a new key at the service and put it. Each one only ever goes to its hosts in `CREDENTIAL_HOSTS`.
+- **Someone's phone or passkey**: see "When someone loses their phone".
 
 ## Tested, and not yet tested
 

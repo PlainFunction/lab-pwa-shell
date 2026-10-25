@@ -7,7 +7,10 @@ main = "src/worker.ts"
 compatibility_date = "2025-09-01"
 compatibility_flags = ["nodejs_compat"]
 
-workers_dev = true
+# One address only: the custom domain below, which is also PUBLIC_URL (passkeys
+# are tied to it). No workers.dev, so there's no second way in that nobody watches.
+workers_dev = false
+# routes = [{ pattern = "app.harbour.example", custom_domain = true }]
 preview_urls = false
 
 [assets]

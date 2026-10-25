@@ -18,7 +18,9 @@
     "deploy": "node scripts/build.mjs && wrangler deploy --config wrangler.toml",
     "typecheck": "tsc -p tsconfig.json && tsc -p capabilities/core/pwa/shell/tsconfig.json && tsc -p capabilities/core/pwa/shell/tsconfig.sw.json",
     "test": "node scripts/build.mjs --check && vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "off": "wrangler kv key put off-switch on --binding KV --config wrangler.toml",
+    "on": "wrangler kv key delete off-switch --binding KV --config wrangler.toml"
   },
   "dependencies": {
     "zod": "4.4.3"

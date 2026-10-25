@@ -109,7 +109,9 @@ describe('this Worker', () => {
       note: "Workers AI isn't connected, so every photo reads as the same sample receipt.",
     } })
     const stored = await env.SCANS.get(`scans/${[...new Uint8Array(await crypto.subtle.digest('SHA-256', photo))].map(b => b.toString(16).padStart(2, '0')).join('')}`)
-    expect(new Uint8Array(await stored!.arrayBuffer())).toEqual(photo)
+    // Filed sealed with the KEYRING, so the bucket on its own holds nothing readable.
+    expect(stored!.customMetadata).toMatchObject({ sealed: '1' })
+    expect(await stored!.text()).toMatch(/^v1\.k1\./)
     const recent = await call('POST', '/api/calls', { tool: 'scans__recent', args: {} })
     expect(recent.body.content.scans[0]).toMatchObject({ title: 'Reece receipt (sample)', detail: 'Bill, dated 2026-10-17' })
   })
